@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>2025 马来西亚个人所得税 (含RM400回扣版)</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f8fafc; margin: 0; padding: 20px; color: #1e293b; }
+        .container { display: grid; grid-template-columns: 1fr 480px; gap: 25px; max-width: 1400px; margin: 0 auto; }
+        .card { background: white; padding: 25px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.05); }
+        
+        /* 动态比例水桶 */
+        #bucket-container { 
+            border: 4px solid #1e293b; border-radius: 12px; 
+            display: flex; flex-direction: column-reverse; background: #ffffff; 
+            overflow: hidden; transition: all 0.5s ease;
+        }
+        .bracket-row { 
+            width: 100%; border-top: 1px dashed #cbd5e1; position: relative; 
+            display: none; align-items: center; justify-content: center;
+            overflow: hidden;
+        }
+        .fill-layer { 
+            position: absolute; bottom: 0; width: 100%; 
+            background: linear-gradient(to top, #2563eb, #60a5fa); 
+            transition: height 0.4s ease; z-index: 1; 
+        }
+        .bracket-text { z-index: 2; font-size: 12px; font-weight: bold; text-align: center; color: #1e293b; pointer-events: none; padding: 5px; }
+        .tax-tag { color: #be123c; font-size: 11px; display: block; margin-top: 3px; font-weight: 800; }
+
+        /* 减免项 */
+        .relief-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-top: 15px; }
+        .relief-box { border: 1px solid #e2e8f0; padding: 12px; border-radius: 10px; background: #fff; border-left: 4px solid #cbd5e1; }
+        .relief-box.active { border-left-color: #2563eb; background: #f0f7ff; }
+        .relief-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 600; }
+        
+        /* 结果面板 */
+        .summary-box { background: #1e293b; color: white; padding: 25px; border-radius: 16px; margin-top: 20px; position: relative;}
+        .res-line { display: flex; justify-content: space-between; margin-bottom: 10px; }
+        .res-total { font-size: 1.8rem; color: #fbbf24; border-top: 1px solid #334155; padding-top: 15px; margin-top: 10px; font-weight: 900; }
+        
+        /* 底部提示词 */
+        .rebate-hint { 
+            margin-top: 15px; padding: 10px; border-radius: 8px; font-size: 0.85rem; 
+            background: rgba(255, 255, 255, 0.1); border-left: 4px solid #fbbf24;
+            display: none; line-height: 1.4;
+        }
+
+        input[type="number"], select { width: 120px; padding: 6px; border-radius: 6px; border: 1px solid #cbd5e1; }
+        #gross-income { width: 100%; padding: 15px; font-size: 1.5rem; border: 2px solid #2563eb; border-radius: 10px; box-sizing: border-box; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="card">
+        <h2 style="margin:0 0 20px 0;">💰 收入与减免设定</h2>
+        <div style="margin-bottom:25px;">
+            <label><b>您的年总收入 (Gross Income): RM</b></label>
+            <input type="number" id="gross-income" value="38000" oninput="calculate()">
+        </div>
+        
+        <h3>📝 21项税务减免项目 (Reliefs)</h3>
+        <div id="relief-list" class="relief-grid"></div>
+    </div>
+
+    <div class="card">
+        <h2 style="margin:0 0 20px 0;">📊 税务位阶 (按金额比例)</h2>
+        <div id="bucket-container"></div>
+
+        <div class="summary-box">
+            <div class="res-line"><span>可征税收入 (Chargeable):</span> <span id="out-taxable">RM 0</span></div>
+            <div class="res-line" style="color:#4ade80"><span>减免节省 (Relief Saved):</span> <span id="out-saved">RM 0</span></div>
+            <div class="res-line" style="color:#fbbf24"><span>个人税收回扣 (Rebate):</span> <span id="out-rebate">- RM 0</span></div>
+            <div class="res-line res-total"><span>最终应缴税额:</span> <span id="out-tax">RM 0</span></div>
+            <div class="res-line"><span>有效税率 (Effective Rate):</span> <span id="out-rate">0%</span></div>
+            
+            <div id="rebate-info" class="rebate-hint">
+                ⚠️ <b>触发 RM400 个人回扣：</b><br>
+                由于您的应课税收入不超过 RM35,000，您符合资格获得最高 RM400 的税收回扣。
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const UNIT_HEIGHT = 45; 
+    const UNIT_VALUE = 5000;
+
+    const taxBrackets = [
+        { min: 0, max: 5000, rate: 0 },
+        { min: 5000, max: 20000, rate: 0.01 },
+        { min: 20000, max: 35000, rate: 0.03 },
+        { min: 35000, max: 50000, rate: 0.06 },
+        { min: 50000, max: 70000, rate: 0.11 },
+        { min: 70000, max: 100000, rate: 0.19 },
+        { min: 100000, max: 400000, rate: 0.25 },
+        { min: 400000, max: 600000, rate: 0.26 },
+        { min: 600000, max: 2000000, rate: 0.28 }
+    ];
+
+    const reliefConfig = [
+        { id:'r1', n:'个人及扶养', l:9000, t:'fixed', d:true },
+        { id:'r2', n:'父母医疗看护', l:8000, t:'input' },
+        { id:'r3', n:'残疾辅助器材', l:6000, t:'input' },
+        { id:'r4', n:'残疾人士 (个人)', l:6000, t:'fixed' },
+        { id:'r5', n:'教育费 (个人)', l:7000, t:'input' },
+        { id:'r6', n:'严重疾病医疗', l:10000, t:'input' },
+        { id:'r7', n:'生活方式 (书/网)', l:2500, t:'input' },
+        { id:'r8', n:'额外生活方式 (运动)', l:500, t:'input' },
+        { id:'r9', n:'哺乳器材 (2年一次)', l:1000, t:'input' },
+        { id:'r10', n:'托儿所/幼儿园', l:3000, t:'input' },
+        { id:'r11', n:'SSPN 净储蓄', l:8000, t:'input' },
+        { id:'r12', n:'前妻赡养费', l:4000, t:'input' },
+        { id:'r13', n:'人寿保险 (含EPF)', l:7000, t:'input' },
+        { id:'r14', n:'私人退休计划 (PRS)', l:3000, t:'input' },
+        { id:'r15', n:'医疗/教育保险', l:3000, t:'input' },
+        { id:'r16', n:'社险 (SOCSO)', l:350, t:'input' },
+        { id:'r17', n:'房贷利息', l:10000, t:'house' },
+        { id:'r18', n:'残疾配偶', l:5000, t:'fixed' },
+        { id:'r19', n:'残疾子女', l:6000, t:'fixed' },
+        { id:'r20', n:'18岁以下子女', l:2000, t:'input' },
+        { id:'r21', n:'18岁以上子女(大学)', l:8000, t:'input' }
+    ];
+
+    function init() {
+        const listEl = document.getElementById('relief-list');
+        reliefConfig.forEach(r => {
+            const div = document.createElement('div');
+            div.className = 'relief-box';
+            div.id = `box-${r.id}`;
+            let ctrl = r.t==='input'? `<input type="number" id="v-${r.id}" placeholder="Max RM${r.l}" oninput="calculate()">` : 
+                       (r.t==='house'? `<select id="v-${r.id}" onchange="calculate()"><option value="0">无</option><option value="10000">房价<500k</option><option value="2000">房价>500k</option></select>` : '');
+            div.innerHTML = `
+                <div class="relief-header"><input type="checkbox" id="c-${r.id}" ${r.d?'checked':''} onchange="calculate()"><span>${r.n}</span></div>
+                ${ctrl}
+            `;
+            listEl.appendChild(div);
+        });
+
+        const bucketEl = document.getElementById('bucket-container');
+        taxBrackets.forEach((b, i) => {
+            const range = b.max - b.min;
+            const hPx = (range / UNIT_VALUE) * UNIT_HEIGHT;
+            const row = document.createElement('div');
+            row.className = 'bracket-row';
+            row.id = `row-${i}`;
+            row.style.height = hPx + 'px';
+            row.innerHTML = `<div id="fill-${i}" class="fill-layer" style="height:0%"></div><div class="bracket-text">RM ${b.min.toLocaleString()} - ${b.max.toLocaleString()} (${Math.round(b.rate*100)}%)<span id="tax-val-${i}" class="tax-tag">Tax: RM 0</span></div>`;
+            bucketEl.appendChild(row);
+        });
+        calculate();
+    }
+
+    function calculate() {
+        const gross = parseFloat(document.getElementById('gross-income').value) || 0;
+        let totalRelief = 0;
+
+        reliefConfig.forEach(r => {
+            const isChecked = document.getElementById(`c-${r.id}`).checked;
+            const box = document.getElementById(`box-${r.id}`);
+            if(isChecked) {
+                box.classList.add('active');
+                if(r.t==='fixed') totalRelief += r.l;
+                else if(r.t==='input') totalRelief += Math.min(parseFloat(document.getElementById(`v-${r.id}`).value)||0, r.l);
+                else if(r.t==='house') totalRelief += parseFloat(document.getElementById(`v-${r.id}`).value)||0;
+            } else { box.classList.remove('active'); }
+        });
+
+        const taxable = Math.max(0, gross - totalRelief);
+        let currentTaxBeforeRebate = 0;
+        let rawTaxTotal = 0;
+
+        taxBrackets.forEach((b, i) => {
+            const rowEl = document.getElementById(`row-${i}`);
+            let amt = 0;
+            if (gross > b.min) {
+                rowEl.style.display = 'flex';
+                if(taxable > b.min) amt = Math.min(taxable, b.max) - b.min;
+            } else { rowEl.style.display = 'none'; }
+
+            let layerTax = amt * b.rate;
+            currentTaxBeforeRebate += layerTax;
+
+            document.getElementById(`fill-${i}`).style.height = (amt / (b.max - b.min) * 100) + '%';
+            document.getElementById(`tax-val-${i}`).innerText = `该阶税额: RM ${layerTax.toLocaleString(undefined,{minimumFractionDigits:2})}`;
+            
+            if(gross > b.min) rawTaxTotal += (Math.min(gross, b.max) - b.min) * b.rate;
+        });
+
+        // 计算 Rebate
+        let rebate = 0;
+        const hintEl = document.getElementById('rebate-info');
+        if (taxable <= 35000 && currentTaxBeforeRebate > 0) {
+            rebate = 400;
+            hintEl.style.display = 'block';
+        } else {
+            hintEl.style.display = 'none';
+        }
+
+        const finalTax = Math.max(0, currentTaxBeforeRebate - rebate);
+        const actualRebateUsed = currentTaxBeforeRebate - finalTax;
+
+        document.getElementById('out-taxable').innerText = "RM " + taxable.toLocaleString();
+        document.getElementById('out-saved').innerText = "RM " + (rawTaxTotal - currentTaxBeforeRebate).toLocaleString();
+        document.getElementById('out-rebate').innerText = "- RM " + actualRebateUsed.toLocaleString();
+        document.getElementById('out-tax').innerText = "RM " + finalTax.toLocaleString(undefined,{minimumFractionDigits: 2});
+        document.getElementById('out-rate').innerText = gross > 0 ? (finalTax/gross*100).toFixed(2) + "%" : "0%";
+    }
+
+    window.onload = init;
+</script>
+
+</body>
+</html>
